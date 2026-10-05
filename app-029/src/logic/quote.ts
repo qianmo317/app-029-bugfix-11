@@ -2,13 +2,19 @@
  * 报价单导出（规格书第 4.6 节）：
  * - PDF：走浏览器打印（打印样式见各页面 @media print），不引入需要编译的依赖；
  * - Excel：纯前端生成 .xls（HTML 表格 + Excel MIME），无需第三方库；
+ * - 工艺卡：CSV（RFC 4180 转义），Excel/WPS 可直接打开；
  * - 金额单位：整数「分」。
+ *
+ * 所有写入单据的文本一律先过转义：
+ * - XLS 是 HTML 文档，文本走 escapeHtml（& < >），否则材料名里的尖括号会被当成标签，整行挤进一格、后续列串位；
+ * - CSV 走 csvCell（含逗号 / 引号 / 换行时加双引号，内部双引号翻倍）。
  */
 
 import type { BomResult, CompareRow } from './materials'
 import { yuan } from './materials'
 import type { LayoutResult } from './layout'
 import { alignLabel, mountingLabel } from './layout'
+import { ledRows } from './led'
 import type { Project } from './types'
 
 export function bomGroupLabel(kind: string): string {
@@ -85,8 +91,27 @@ function download(filename: string, blob: Blob): void {
   setTimeout(() => URL.revokeObjectURL(url), 2000)
 }
 
-function esc(s: string): string {
+/** XLS（HTML）文本转义：& 必须最先替换 */
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+function td(value: string | number, tag: 'td' | 'th' = 'td', colspan?: number): string {
+  const span = colspan ? ` colspan="${colspan}"` : ''
+  return `<${tag}${span}>${escapeHtml(String(value))}</${tag}>`
+}
+
+/** CSV 单元格转义（RFC 4180）：含逗号、双引号或换行时整段加双引号，内部双引号翻倍 */
+function csvCell(value: string | number): string {
+  const s = String(value)
+  if (/[",\r\n]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`
+  }
   return s
+}
+
+function csvRow(cells: Array<string | number>): string {
+  return cells.map(csvCell).join(',')
 }
 
 /** 导出 Excel（.xls，Excel/WPS 可直接打开） */
@@ -94,44 +119,109 @@ export function exportQuoteXls(project: Project, layout: LayoutResult, bom: BomR
   const doc = buildQuoteDoc(project, layout, bom, fontLabel)
   const table = `
   <table border="1">
-    <tr><th colspan="6">${esc(doc.title)}</th></tr>
-    <tr><td>项目</td><td colspan="5">${esc(doc.projectName)}</td></tr>
-    <tr><td>门头尺寸</td><td colspan="5">${esc(doc.panelText)}</td></tr>
-    <tr><td>字体/排版</td><td colspan="5">${esc(doc.fontText)}</td></tr>
-    <tr><td>排版结果</td><td colspan="5">${esc(doc.layoutText)}</td></tr>
-    <tr><th>类别</th><th>规格/说明</th><th>数量</th><th>单位</th><th>单价(元)</th><th>金额(元)</th></tr>
-    ${doc.rows
+    <tr>${td(doc.title, 'th', 6)}</tr>
+    <tr>${td('项目')}${td(doc.projectName, 'td', 5)}</tr>
+    <tr>${td('门头尺寸')}${td(doc.panelText, 'td', 5)}</tr>
+    <tr>${td('字体/排版')}${td(doc.fontText, 'td', 5)}</tr>
+    <tr>${td('排版结果')}${td(doc.layoutText, 'td', 5)}</tr>
+    <tr>${td('类别', 'th')}${td('规格/说明', 'th')}${td('数量', 'th')}${td('单位', 'th')}${td('单价(元)', 'th')}${td(
+      '金额(元)',
+      'th'
+    )}</tr>
+    ${doc.rows.map((r) => `<tr>${td(r.group)}${td(r.spec)}${td(r.qty)}${td(r.unit)}${td(r.unitPrice)}${td(r.amount)}</tr>`).join('\n')}
+    <tr>${td('合计', 'td', 5)}${td(doc.total)}</tr>
+    <tr>${td('工艺说明', 'th', 6)}</tr>
+    ${doc.notes.map((n) => `<tr>${td(n, 'td', 6)}</tr>`).join('\n')}
+    <tr>${td(`多材质对照（共 ${compare.length} 种材质，单位：元）`, 'th', 6)}</tr>
+    <tr>${td('材质', 'th')}${td('面板', 'th')}${td('LED+电源', 'th')}${td('配件+加工', 'th')}${td('合计', 'th')}</tr>
+    ${compare
       .map(
-        (r) =>
-          `<tr><td>${esc(r.group)}</td><td>${esc(r.spec)}</td><td>${esc(r.qty)}</td><td>${esc(r.unit)}</td><td>${esc(
-            r.unitPrice
-          )}</td><td>${esc(r.amount)}</td></tr>`
+        (c) =>
+          `<tr>${td(c.name)}${td(yuan(c.panelCents))}${td(yuan(c.ledCents + c.psuCents))}${td(
+            yuan(c.accessoryCents + c.laborCents)
+          )}${td(yuan(c.totalCents))}</tr>`
       )
       .join('\n')}
-    <tr><td colspan="5">合计</td><td>${esc(doc.total)}</td></tr>
-    <tr><td colspan="6">对照共 ${compare.length} 种材质</td></tr>
-    <tr><td colspan="6">${esc(doc.footer)}</td></tr>
+    <tr>${td(doc.footer, 'td', 6)}</tr>
   </table>`
   const html = `<html><head><meta charset="utf-8"></head><body>${table}</body></html>`
-  download(`${project.name || '招牌'}报价单.xls`, new Blob([`\ufeff${html}`], { type: 'application/vnd.ms-excel;charset=utf-8' }))
+  download(`${project.name || '招牌'}报价单.xls`, new Blob(['﻿' + html], { type: 'application/vnd.ms-excel;charset=utf-8' }))
 }
 
-/** 导出工艺卡（CSV，供车间流转；PDF 走浏览器打印） */
+/** 导出工艺卡（CSV，供车间流转；PDF 走浏览器打印）。四段固定顺序，缺段也不跳过。 */
 export function exportProcessCardCsv(project: Project, layout: LayoutResult, bom: BomResult, fontLabel: string): void {
   const lines: string[] = []
-  lines.push('招牌字工艺卡')
-  lines.push(`项目,${project.name}`)
-  lines.push(`门头,${project.layout.panel.wMm}×${project.layout.panel.hMm}mm 边框${project.layout.panel.frameMm}mm`)
-  lines.push(`字体,${fontLabel} 字重${project.layout.settings.weight} 字号${layout.sizeMm}mm`)
-  lines.push(`排版,${alignLabel(project.layout.settings.align)} 占宽${layout.occupiedW}mm 占高${layout.occupiedH}mm`)
+  const st = project.layout.settings
+  lines.push(csvRow(['招牌字工艺卡']))
+  lines.push(csvRow(['项目', project.name]))
+  lines.push(csvRow(['门头', `${project.layout.panel.wMm}×${project.layout.panel.hMm}mm 边框${project.layout.panel.frameMm}mm`]))
+  lines.push(csvRow(['安装方式', mountingLabel(project.layout.panel.mounting)]))
+  lines.push(csvRow(['字体', `${fontLabel} 字重${st.weight} 字号${layout.sizeMm}mm`]))
+  lines.push(
+    csvRow([
+      '排版',
+      `${alignLabel(st.align)} 占宽${layout.occupiedW}mm 占高${layout.occupiedH}mm 视觉间距极差${layout.gapSpread}mm`
+    ])
+  )
   lines.push('')
-  lines.push('字形工艺分析')
+
+  // 第 1 段：字形工艺分析（逐字表，车间据此分件）
+  lines.push(csvRow(['字形工艺分析']))
+  lines.push(csvRow(['字符', '字号 mm', '笔画块', '外轮廓周长 mm', '最细笔画 mm', '警告']))
+  for (const g of layout.glyphs) {
+    const outerPerimeter = g.contours
+      .filter((c) => !c.isHole)
+      .reduce((sum, c) => sum + c.perimeterMm, 0)
+      .toFixed(1)
+    lines.push(
+      csvRow([
+        g.char,
+        g.sizeMm,
+        g.strokeBlocks,
+        outerPerimeter,
+        g.minStrokeMm,
+        g.warnings.join('；') || '—'
+      ])
+    )
+  }
   lines.push('')
-  lines.push('其余明细见系统')
+
+  // 第 2 段：裁切清单（同尺寸合并计数）
+  lines.push(csvRow(['裁切清单']))
+  lines.push(csvRow(['料件', '宽 mm', '高 mm', '数量']))
+  if (bom.cutList.length === 0) {
+    lines.push(csvRow(['（无）', '', '', '']))
+  } else {
+    for (const c of bom.cutList) {
+      lines.push(csvRow([c.label, c.wMm, c.hMm, c.count]))
+    }
+  }
   lines.push('')
-  lines.push('亚克力拼版')
-  lines.push(`板材,${bom.sheet.spec}`)
-  lines.push(`板数,${bom.nesting.sheetCount}`)
-  lines.push(`利用率,${(bom.nesting.utilization * 100).toFixed(1)}%`)
-  download(`${project.name || '招牌'}工艺卡.csv`, new Blob([`\ufeff${lines.join('\n')}`], { type: 'text/csv;charset=utf-8' }))
+
+  // 第 3 段：灯与电源（每字灯数 + 总电源台数，车间据此分区领料）
+  lines.push(csvRow(['灯与电源']))
+  lines.push(csvRow(['布点总长度 mm', bom.led.perimeterTotalMm]))
+  lines.push(csvRow(['模组总数（只）', bom.led.modules]))
+  lines.push(csvRow(['额定功率 W', bom.led.ratedW]))
+  lines.push(csvRow(['建议电源', bom.led.suggestedPsu]))
+  lines.push(csvRow(['单台电源功率 W', bom.led.psuUnitW]))
+  lines.push(csvRow(['电源数量（台）', bom.led.psuCount]))
+  if (bom.led.note) lines.push(csvRow(['说明', bom.led.note]))
+  lines.push(csvRow(['字符', '笔画块', '外轮廓周长 mm', '灯数（只）', '额定功率 W']))
+  for (const r of ledRows(layout.chars, project.led)) {
+    lines.push(csvRow([r.char, r.blocks, r.outerPerimeterMm, r.modules, r.ratedW]))
+  }
+  lines.push('')
+
+  // 第 4 段：拼版（板材、板数、利用率，固定在最后）
+  lines.push(csvRow(['亚克力拼版']))
+  lines.push(csvRow(['板材', bom.sheet.spec]))
+  lines.push(csvRow(['板数（张）', bom.nesting.sheetCount]))
+  lines.push(csvRow(['利用率', `${(bom.nesting.utilization * 100).toFixed(1)}%`]))
+  lines.push(csvRow(['料件总数', bom.nesting.pieceCount]))
+  if (bom.nesting.oversize.length > 0) {
+    lines.push(csvRow(['超板料件', bom.nesting.oversize.map((p) => `${p.label} ${p.wMm}×${p.hMm}mm`).join('；')]))
+  }
+
+  download(`${project.name || '招牌'}工艺卡.csv`, new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }))
 }

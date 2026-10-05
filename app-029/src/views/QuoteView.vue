@@ -38,6 +38,7 @@ const compare = computed(() =>
 
 function printNow(): void {
   printed.value = true
+  window.print()
 }
 
 function toExcel(): void {
@@ -48,7 +49,7 @@ function toExcel(): void {
 
 function toCsv(): void {
   if (project.value && layout.value && bom.value) {
-    exportProcessCardCsv(project.value, layout.value, bom.value, '')
+    exportProcessCardCsv(project.value, layout.value, bom.value, fontLabel.value)
   }
 }
 </script>

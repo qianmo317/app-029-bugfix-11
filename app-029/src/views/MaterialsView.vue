@@ -24,6 +24,13 @@ const compare = computed(() =>
   project.value && layout.value && bom.value ? compareMaterials(project.value, layout.value, preset.value, bom.value) : []
 )
 
+const fontLabel = computed(() => {
+  const p = project.value
+  if (!p) return ''
+  const f = findFont(p.layout.settings.fontId)
+  return f ? `${f.label}（${f.family}）` : ''
+})
+
 const grouped = computed(() => {
   const b = bom.value
   if (!b) return []
@@ -43,7 +50,7 @@ function applySheet(id: string): void {
 
 function processCard(): void {
   if (project.value && layout.value && bom.value) {
-    exportProcessCardCsv(project.value, layout.value, bom.value, findFont(project.value.layout.settings.fontId)?.family ?? '')
+    exportProcessCardCsv(project.value, layout.value, bom.value, fontLabel.value)
   }
 }
 </script>
